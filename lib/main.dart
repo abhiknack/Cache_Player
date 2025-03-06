@@ -34,8 +34,11 @@ class _VideoScreenState extends State<VideoScreen> {
   
   bool _isOffline = false;
   double _bufferedPercentage = 0.0;
+  double _highestBufferedPercentage = 0.0;  // Track highest buffer percentage
   String _statusMessage = "Initializing player...";
   File? _activeBufferFile;
+  int _totalBytes = 0;  // Track total video size
+  int _bufferedBytes = 0;  // Track buffered bytes
   
   @override
   void initState() {
@@ -68,12 +71,22 @@ class _VideoScreenState extends State<VideoScreen> {
     });
   }
   
+  void _updateBufferPercentage(double newPercentage) {
+    if (newPercentage > _highestBufferedPercentage) {
+      _highestBufferedPercentage = newPercentage;
+    }
+    setState(() {
+      _bufferedPercentage = _highestBufferedPercentage;
+      _updateStatusMessage();
+    });
+  }
+
   void _updateStatusMessage() {
     setState(() {
       if (_isOffline) {
-        _statusMessage = "OFFLINE MODE - ${(_bufferedPercentage * 100).toStringAsFixed(0)}% buffered";
+        _statusMessage = "OFFLINE MODE - ${(_highestBufferedPercentage * 100).toStringAsFixed(0)}% buffered";
       } else {
-        _statusMessage = "Connected - ${(_bufferedPercentage * 100).toStringAsFixed(0)}% buffered";
+        _statusMessage = "Connected - ${(_highestBufferedPercentage * 100).toStringAsFixed(0)}% buffered";
       }
     });
   }
@@ -163,12 +176,7 @@ class _VideoScreenState extends State<VideoScreen> {
               final duration = _betterPlayerController.videoPlayerController?.value.duration;
               if (duration != null && duration.inMilliseconds > 0) {
                 percentage = (progress.inMilliseconds / duration.inMilliseconds);
-                
-                // Update buffered percentage for status message
-                setState(() {
-                  _bufferedPercentage = percentage;
-                  _updateStatusMessage();
-                });
+                _updateBufferPercentage(percentage);
                 
                 // Save buffer when we reach certain thresholds
                 if ((percentage * 100) % 25 < 1) {
@@ -178,12 +186,7 @@ class _VideoScreenState extends State<VideoScreen> {
               }
             } else if (progress is num) {
               percentage = progress.toDouble();
-              
-              // Update buffered percentage for status message
-              setState(() {
-                _bufferedPercentage = percentage;
-                _updateStatusMessage();
-              });
+              _updateBufferPercentage(percentage);
               
               // Save buffer when we reach certain thresholds
               if ((percentage * 100) % 25 < 1) {
@@ -210,11 +213,15 @@ class _VideoScreenState extends State<VideoScreen> {
               totalBufferedMs += (range.end.inMilliseconds - range.start.inMilliseconds);
             }
             
-            // Update buffered percentage
-            setState(() {
-              _bufferedPercentage = totalBufferedMs / duration.inMilliseconds;
-              _updateStatusMessage();
-            });
+            // Update buffered percentage using the highest value method
+            final newPercentage = totalBufferedMs / duration.inMilliseconds;
+            _updateBufferPercentage(newPercentage);
+            
+            // Update buffered bytes if we know the total size
+            if (_totalBytes > 0) {
+              _bufferedBytes = (newPercentage * _totalBytes).round();
+              print("💾 Buffered bytes: ${(_bufferedBytes / 1024 / 1024).toStringAsFixed(2)}MB / ${(_totalBytes / 1024 / 1024).toStringAsFixed(2)}MB");
+            }
           }
         }
       }
@@ -247,7 +254,7 @@ class _VideoScreenState extends State<VideoScreen> {
       final files = dir.listSync();
       
       File? largestFile;
-      int maxSize = 0;
+      int maxSize = _bufferedBytes; // Use our tracked buffer size as minimum
       
       // Find the largest cache file
       for (var file in files) {
@@ -256,6 +263,12 @@ class _VideoScreenState extends State<VideoScreen> {
           if (size > maxSize) {
             maxSize = size;
             largestFile = file;
+            // Update our tracking of total bytes if we find a larger file
+            if (maxSize > _totalBytes) {
+              _totalBytes = maxSize;
+              final newPercentage = _bufferedBytes / _totalBytes;
+              _updateBufferPercentage(newPercentage);
+            }
           }
         }
       }
@@ -263,7 +276,8 @@ class _VideoScreenState extends State<VideoScreen> {
       // Copy the largest cache file to our buffer file
       if (largestFile != null) {
         await largestFile.copy(_activeBufferFile!.path);
-        print("💾 Updated buffer file: ${(maxSize / 1024).toStringAsFixed(1)}KB");
+        _bufferedBytes = maxSize;
+        print("💾 Updated buffer file: ${(maxSize / 1024 / 1024).toStringAsFixed(2)}MB");
       }
     } catch (e) {
       print("❌ Error saving buffer: $e");
@@ -273,6 +287,9 @@ class _VideoScreenState extends State<VideoScreen> {
   // Add new function to continue playback from buffer when going offline
   Future<void> _continueWithBufferedContent() async {
     try {
+      // Save the current buffer percentage
+      final savedBufferPercentage = _highestBufferedPercentage;
+      
       // Get current playback state
       final currentPosition = _betterPlayerController.videoPlayerController?.value.position;
       final wasPlaying = _betterPlayerController.isPlaying() ?? false;
@@ -334,6 +351,9 @@ class _VideoScreenState extends State<VideoScreen> {
           oldController.dispose();
           
           print("✅ Successfully switched to buffered playback");
+          
+          // After switching controllers, restore the buffer percentage
+          _updateBufferPercentage(savedBufferPercentage);
           return;
         }
       }
