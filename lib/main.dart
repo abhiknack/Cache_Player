@@ -29,7 +29,16 @@ class VideoScreen extends StatefulWidget {
 }
 
 class _VideoScreenState extends State<VideoScreen> {
-  late BetterPlayerController _betterPlayerController;
+  BetterPlayerController _betterPlayerController = BetterPlayerController(
+    BetterPlayerConfiguration(
+      autoPlay: false,
+      looping: true,
+      fit: BoxFit.contain,
+      placeholder: Center(child: CircularProgressIndicator()),
+      handleLifecycle: true,
+      autoDispose: true,
+    )
+  );
   final String videoUrl =
       "https://firebasestorage.googleapis.com/v0/b/nibbl-b8d73.appspot.com/o/marin%5B1%5D.mp4?alt=media&token=7a39c3bd-4788-411b-a88d-c88441196107";
   
@@ -77,7 +86,7 @@ class _VideoScreenState extends State<VideoScreen> {
       _highestBufferedPercentage = newPercentage;
       
       // If we've reached 100% buffering, save to permanent cache and stop all monitoring
-      if (_highestBufferedPercentage >= 0.99) {
+      if (_highestBufferedPercentage >= 0.99 && !_isFullyCached) {
         _saveToCache().then((_) {
           // Stop all monitoring and buffering operations
           _stopAllMonitoring();
@@ -210,7 +219,7 @@ class _VideoScreenState extends State<VideoScreen> {
     // Define better player configuration
     BetterPlayerConfiguration betterPlayerConfiguration = BetterPlayerConfiguration(
       autoPlay: true,
-      looping: false,
+      looping: true,
       fit: BoxFit.contain,
       handleLifecycle: true,
       autoDispose: true,
@@ -220,6 +229,7 @@ class _VideoScreenState extends State<VideoScreen> {
         enableFullscreen: true,
         enableProgressText: true,
         enableProgressBar: true,
+        enablePlaybackSpeed: true,
         showControlsOnInitialize: true,
         loadingWidget: Center(
           child: CircularProgressIndicator(
@@ -227,136 +237,47 @@ class _VideoScreenState extends State<VideoScreen> {
           ),
         ),
       ),
+      playerVisibilityChangedBehavior: onVisibilityChanged,
     );
 
-    // Define the data source with optimized caching configuration
-    BetterPlayerDataSource dataSource = BetterPlayerDataSource(
-      BetterPlayerDataSourceType.network,
-      videoUrl,
-      cacheConfiguration: BetterPlayerCacheConfiguration(
-        useCache: true,
-        maxCacheFileSize: 50 * 1024 * 1024, // Increased to 50 MB per file
-        maxCacheSize: 100 * 1024 * 1024, // Increased to 100 MB total cache
-        key: "big_buck_bunny",
-      ),
-      bufferingConfiguration: BetterPlayerBufferingConfiguration(
-        minBufferMs: 50000,
-        maxBufferMs: 120000,
-        bufferForPlaybackMs: 2500,
-        bufferForPlaybackAfterRebufferMs: 5000,
-      ),
-      notificationConfiguration: BetterPlayerNotificationConfiguration(
-        showNotification: false,
-      ),
-    );
+    // Check for existing cache first
+    _tryPlayFromCache().then((bool cacheExists) {
+      if (!cacheExists) {
+        print("🎬 No cache found, setting up network source");
+        
+        // Only setup network source if no cache exists
+        BetterPlayerDataSource dataSource = BetterPlayerDataSource(
+          BetterPlayerDataSourceType.network,
+          videoUrl,
+          cacheConfiguration: BetterPlayerCacheConfiguration(
+            useCache: true,
+            maxCacheFileSize: 50 * 1024 * 1024,
+            maxCacheSize: 100 * 1024 * 1024,
+            key: "big_buck_bunny",
+          ),
+          bufferingConfiguration: BetterPlayerBufferingConfiguration(
+            minBufferMs: 50000,
+            maxBufferMs: 120000,
+            bufferForPlaybackMs: 2500,
+            bufferForPlaybackAfterRebufferMs: 5000,
+          ),
+          notificationConfiguration: BetterPlayerNotificationConfiguration(
+            showNotification: false,
+          ),
+        );
 
-    // Initialize the controller
-    _betterPlayerController = BetterPlayerController(betterPlayerConfiguration);
-    _betterPlayerController.setupDataSource(dataSource);
+        // Dispose of the default controller before creating a new one
+        _betterPlayerController.dispose();
 
-    // Get the total video size when initialized
-    _betterPlayerController.addEventsListener((BetterPlayerEvent event) async {
-      if (event.betterPlayerEventType == BetterPlayerEventType.initialized) {
-        print("✅ Player initialized successfully");
+        // Initialize the controller with network source
+        _betterPlayerController = BetterPlayerController(betterPlayerConfiguration);
         
-        try {
-          // Make a HEAD request to get the content length
-          final client = HttpClient();
-          final request = await client.headUrl(Uri.parse(videoUrl));
-          final response = await request.close();
+        if (mounted) {
+          // Only setup data source if the widget is still mounted
+          _betterPlayerController.setupDataSource(dataSource);
           
-          if (response.contentLength != null && response.contentLength! > 0) {
-            _totalBytes = response.contentLength!;
-            print("📊 Total video size: ${(_totalBytes / 1024 / 1024).toStringAsFixed(2)}MB");
-          }
-          client.close();
-        } catch (e) {
-          print("⚠️ Error getting video size: $e");
-        }
-        
-        setState(() {
-          _statusMessage = "Player initialized";
-        });
-        
-        // Start saving buffer when initialized
-        _startSavingBuffer();
-        
-      } else if (event.betterPlayerEventType == BetterPlayerEventType.exception) {
-        print("❌ Exception occurred: ${event.parameters}");
-        
-        if (_isOffline) {
-          _tryPlayFromCache();
-        }
-      } else if (event.betterPlayerEventType == BetterPlayerEventType.progress) {
-        try {
-          final progress = event.parameters?["progress"];
-          if (progress != null) {
-            double percentage = 0;
-            if (progress is Duration) {
-              final duration = _betterPlayerController.videoPlayerController?.value.duration;
-              if (duration != null && duration.inMilliseconds > 0) {
-                percentage = (progress.inMilliseconds / duration.inMilliseconds);
-                _updateBufferPercentage(percentage);
-                
-                // Update buffered bytes based on percentage of total size
-                if (_totalBytes > 0) {
-                  _bufferedBytes = (percentage * _totalBytes).round();
-                  print("💾 Buffered bytes: ${(_bufferedBytes / 1024 / 1024).toStringAsFixed(2)}MB / ${(_totalBytes / 1024 / 1024).toStringAsFixed(2)}MB");
-                }
-                
-                // Save buffer when we reach certain thresholds
-                if ((percentage * 100) % 25 < 1) {
-                  print("📊 Buffering: ${(percentage * 100).toStringAsFixed(1)}%");
-                  _saveCurrentBuffer();
-                }
-              }
-            } else if (progress is num) {
-              percentage = progress.toDouble();
-              _updateBufferPercentage(percentage);
-              
-              // Update buffered bytes based on percentage
-              if (_totalBytes > 0) {
-                _bufferedBytes = (percentage * _totalBytes).round();
-                print("💾 Buffered bytes: ${(_bufferedBytes / 1024 / 1024).toStringAsFixed(2)}MB / ${(_totalBytes / 1024 / 1024).toStringAsFixed(2)}MB");
-              }
-              
-              // Save buffer when we reach certain thresholds
-              if ((percentage * 100) % 25 < 1) {
-                print("📊 Buffering: ${(percentage * 100).toStringAsFixed(1)}%");
-                _saveCurrentBuffer();
-              }
-            }
-          }
-        } catch (e) {
-          print("⚠️ Progress calculation error: $e");
-        }
-      } else if (event.betterPlayerEventType == BetterPlayerEventType.finished) {
-        print("✅ Video finished playing");
-        // Stop all monitoring when video finishes
-        _stopAllMonitoring();
-        setState(() {
-          _statusMessage = "Video playback completed";
-        });
-      } else if (event.betterPlayerEventType == BetterPlayerEventType.bufferingUpdate) {
-        if (_betterPlayerController.videoPlayerController != null) {
-          final bufferedRanges = _betterPlayerController.videoPlayerController!.value.buffered;
-          final duration = _betterPlayerController.videoPlayerController!.value.duration;
-          
-          if (bufferedRanges.isNotEmpty && duration?.inMilliseconds != null && duration!.inMilliseconds > 0) {
-            int totalBufferedMs = 0;
-            for (var range in bufferedRanges) {
-              totalBufferedMs += (range.end.inMilliseconds - range.start.inMilliseconds);
-            }
-            
-            final newPercentage = totalBufferedMs / duration.inMilliseconds;
-            _updateBufferPercentage(newPercentage);
-            
-            // Update buffered bytes based on percentage of total size
-            if (_totalBytes > 0) {
-              _bufferedBytes = (newPercentage * _totalBytes).round();
-              print("💾 Buffered bytes: ${(_bufferedBytes / 1024 / 1024).toStringAsFixed(2)}MB / ${(_totalBytes / 1024 / 1024).toStringAsFixed(2)}MB");
-            }
-          }
+          // Setup event listeners for network source
+          _setupEventListeners();
         }
       }
     });
@@ -384,7 +305,7 @@ class _VideoScreenState extends State<VideoScreen> {
     print("🛑 Stopped all monitoring - Video is complete");
   }
 
-  // Modify _startSavingBuffer to check video state
+  // Modify _startSavingBuffer to not save continuously
   Future<void> _startSavingBuffer() async {
     if (_activeBufferFile == null || _isFullyCached) return;
     
@@ -392,7 +313,7 @@ class _VideoScreenState extends State<VideoScreen> {
     _bufferTimer?.cancel();
     _statusTimer?.cancel();
     
-    // Start buffer check timer
+    // Start buffer check timer - only for monitoring progress
     _bufferTimer = Timer.periodic(Duration(seconds: 1), (timer) async {
       if (!mounted || _isFullyCached || 
           (_betterPlayerController.videoPlayerController?.value.position.inMilliseconds ?? 0) >= 
@@ -416,9 +337,6 @@ class _VideoScreenState extends State<VideoScreen> {
           // Update buffer percentage
           final percentage = totalBufferedMs / duration.inMilliseconds;
           _updateBufferPercentage(percentage);
-          
-          // Save buffer
-          await _saveCurrentBuffer();
         }
       } catch (e) {
         print("⚠️ Error in buffer check: $e");
@@ -1018,328 +936,74 @@ class _VideoScreenState extends State<VideoScreen> {
     }
   }
 
-  Future<void> _tryPlayFromCache() async {
+  Future<bool> _tryPlayFromCache() async {
     print("\n🔍 === Starting Enhanced Cache Playback Attempt ===");
-    print("📊 Current state:");
-    print("- Offline mode: $_isOffline");
-    print("- Buffered percentage: ${(_highestBufferedPercentage * 100).toStringAsFixed(1)}%");
-    print("- Buffered bytes: ${(_bufferedBytes / 1024 / 1024).toStringAsFixed(2)}MB");
-    print("- Total bytes: ${(_totalBytes / 1024 / 1024).toStringAsFixed(2)}MB");
     
     try {
       // Get cache directory
       final cacheDir = await getTemporaryDirectory();
-      print("\n📂 Cache directory: ${cacheDir.path}");
+      final cacheKey = "big_buck_bunny";
       
-      List<File> candidateFiles = [];
-      
-      // Look in multiple places for cache files
-      
-      // 1. Check standard BetterPlayer cache locations
-      try {
-        final betterPlayerCacheDir = Directory(cacheDir.path);
-        if (await betterPlayerCacheDir.exists()) {
-          final files = await betterPlayerCacheDir.list().toList();
-          for (var entity in files) {
-            if (entity is File) {
-              final path = entity.path.toLowerCase();
-              if (path.contains("big_buck_bunny") || 
-                  path.contains("temp_network") || 
-                  path.contains("cache") || 
-                  path.contains("buffer") ||
-                  path.endsWith(".mp4") ||
-                  path.endsWith(".cache")) {
-                
-                try {
-                  final size = await entity.length();
-                  if (size > 100 * 1024) { // Larger than 100KB
-                    print("\n📄 Found potential cache file: ${entity.path}");
-                    print("- Size: ${(size / 1024 / 1024).toStringAsFixed(2)}MB");
-                    candidateFiles.add(entity);
-                  }
-                } catch (e) {
-                  print("\n⚠️ Error checking file size: $e");
-                }
-              }
-            }
-          }
-        }
-      } catch (e) {
-        print("\n⚠️ Error scanning BetterPlayer cache: $e");
-      }
-      
-      // 2. Check any final cache files we've created
+      // Check for final cache file first
       final finalCachePattern = RegExp(r'final_cache_.*\.mp4$');
-      try {
-        final finalCacheFiles = await Directory(cacheDir.path)
-            .list()
-            .where((entity) => 
-                entity is File && 
-                finalCachePattern.hasMatch(entity.path))
-            .toList();
+      final files = await Directory(cacheDir.path).list().toList();
+      
+      File? cachedFile;
+      int maxSize = 0;
+      
+      // Look for the largest final cache file
+      for (var entity in files) {
+        if (entity is File && finalCachePattern.hasMatch(entity.path)) {
+          try {
+            final size = await entity.length();
+            if (size > maxSize) {
+              maxSize = size;
+              cachedFile = entity;
+            }
+          } catch (e) {
+            print("⚠️ Error checking cache file size: $e");
+          }
+        }
+      }
+      
+      if (cachedFile != null && maxSize > 0) {
+        print("✅ Found cached file: ${cachedFile.path} (${(maxSize / 1024 / 1024).toStringAsFixed(2)}MB)");
         
-        for (var entity in finalCacheFiles) {
-          if (entity is File) {
-            try {
-              final size = await entity.length();
-              if (size > 100 * 1024) { // Larger than 100KB
-                print("\n📄 Found final cache file: ${entity.path}");
-                print("- Size: ${(size / 1024 / 1024).toStringAsFixed(2)}MB");
-                candidateFiles.add(entity);
-              }
-            } catch (e) {
-              print("\n⚠️ Error checking final cache file size: $e");
-            }
-          }
-        }
-      } catch (e) {
-        print("\n⚠️ Error scanning for final cache files: $e");
-      }
-      
-      // 3. Check our active buffer file
-      if (_activeBufferFile != null) {
-        try {
-          if (await _activeBufferFile!.exists()) {
-            final size = await _activeBufferFile!.length();
-            if (size > 100 * 1024) { // Larger than 100KB
-              print("\n📄 Found active buffer file: ${_activeBufferFile!.path}");
-              print("- Size: ${(size / 1024 / 1024).toStringAsFixed(2)}MB");
-              candidateFiles.add(_activeBufferFile!);
-            } else {
-              print("\n⚠️ Active buffer file is too small: ${(size / 1024 / 1024).toStringAsFixed(2)}MB");
-            }
-          } else {
-            print("\n⚠️ Active buffer file doesn't exist");
-          }
-        } catch (e) {
-          print("\n⚠️ Error checking active buffer file: $e");
-        }
-      }
-      
-      print("\n📊 Found ${candidateFiles.length} potential cache files");
-      
-      if (candidateFiles.isEmpty) {
-        print("\n❌ No candidate cache files found");
+        // Create new controller for cached content
+        final newController = BetterPlayerController(
+          BetterPlayerConfiguration(
+            autoPlay: true,
+            looping: true,
+            fit: BoxFit.contain,
+          ),
+        );
+        
+        // Setup data source from cache file
+        final cacheDataSource = BetterPlayerDataSource(
+          BetterPlayerDataSourceType.file,
+          cachedFile.path,
+        );
+        
+        await newController.setupDataSource(cacheDataSource);
+        
+        // Switch to new controller
+        final oldController = _betterPlayerController;
         setState(() {
-          _statusMessage = "No cache files found";
+          _betterPlayerController = newController;
+          _isFullyCached = true;
+          _statusMessage = "Playing from cache (${(maxSize / 1024 / 1024).toStringAsFixed(2)}MB)";
         });
-        return;
+        
+        // Dispose old controller
+        oldController.dispose();
+        
+        return true;
       }
-      
-      // Verify and sort candidate files
-      Map<String, int> fileSizes = {};
-      List<File> verifiedFiles = [];
-      
-      for (var file in candidateFiles) {
-        try {
-          // Check if file exists and has content
-          if (!await file.exists()) {
-            print("\n⚠️ File no longer exists: ${file.path}");
-            continue;
-          }
-          
-          final size = await file.length();
-          if (size <= 0) {
-            print("\n⚠️ File is empty: ${file.path}");
-            continue;
-          }
-          
-          // Check if file is readable
-          try {
-            final bytes = await file.openRead(0, 8192).fold<List<int>>(
-              <int>[],
-              (previous, element) => previous..addAll(element),
-            );
-            
-            if (bytes.isEmpty) {
-              print("\n⚠️ File not readable: ${file.path}");
-              continue;
-            }
-            
-            // Basic check for video file format
-            bool isValidVideo = false;
-            
-            // Check for MP4 magic numbers
-            if (bytes.length >= 8) {
-              // Check for MP4 ftyp box
-              if (bytes.length > 12 && 
-                  String.fromCharCodes(bytes.sublist(4, 8)) == 'ftyp') {
-                isValidVideo = true;
-              }
-              
-              // Check for older QuickTime files
-              if (String.fromCharCodes(bytes.sublist(4, 8)) == 'moov' ||
-                  String.fromCharCodes(bytes.sublist(4, 8)) == 'mdat') {
-                isValidVideo = true;
-              }
-            }
-            
-            // Accept any file over 500KB as probably a valid video
-            if (size > 500 * 1024) {
-              isValidVideo = true;
-            }
-            
-            if (isValidVideo) {
-              print("\n✅ Verified cache file: ${file.path}");
-              print("- Size: ${(size / 1024 / 1024).toStringAsFixed(2)}MB");
-              fileSizes[file.path] = size;
-              verifiedFiles.add(file);
-            } else {
-              print("\n⚠️ Not a valid video file: ${file.path}");
-            }
-          } catch (e) {
-            print("\n⚠️ Error verifying file: $e");
-          }
-        } catch (e) {
-          print("\n⚠️ Error processing file: $e");
-        }
-      }
-      
-      // Sort verified files by size (largest first)
-      verifiedFiles.sort((a, b) {
-        final sizeA = fileSizes[a.path] ?? 0;
-        final sizeB = fileSizes[b.path] ?? 0;
-        return sizeB.compareTo(sizeA);
-      });
-      
-      print("\n🔄 Found ${verifiedFiles.length} verified cache files");
-      
-      if (verifiedFiles.isEmpty) {
-        print("\n❌ No verified cache files available");
-        setState(() {
-          _statusMessage = "No valid cached content available";
-        });
-        return;
-      }
-      
-      // Try to play each verified file in order (largest first)
-      for (var file in verifiedFiles) {
-        try {
-          final size = fileSizes[file.path] ?? 0;
-          print("\n📝 Attempting to initialize player with: ${file.path}");
-          print("- File size: ${(size / 1024 / 1024).toStringAsFixed(2)}MB");
-          
-          // Create a new controller with more conservative buffering settings
-          final newController = BetterPlayerController(
-            BetterPlayerConfiguration(
-              autoPlay: false,
-              looping: false,
-              fit: BoxFit.contain,
-              handleLifecycle: true,
-              autoDispose: true,
-              showPlaceholderUntilPlay: true,
-              controlsConfiguration: BetterPlayerControlsConfiguration(
-                enableProgressText: true,
-                enableProgressBar: true,
-                showControlsOnInitialize: true,
-              ),
-            ),
-          );
-          
-          // Setup data source with more conservative buffering
-          final cacheDataSource = BetterPlayerDataSource(
-            BetterPlayerDataSourceType.file,
-            file.path,
-            bufferingConfiguration: BetterPlayerBufferingConfiguration(
-              minBufferMs: 2000,
-              maxBufferMs: 10000,
-              bufferForPlaybackMs: 1000,
-              bufferForPlaybackAfterRebufferMs: 2000,
-            ),
-          );
-          
-          print("\n⏳ Setting up data source...");
-          
-          // Create a completer to track initialization
-          final completer = Completer<bool>();
-          
-          // Set up event listener before setting up data source
-          newController.addEventsListener((event) {
-            if (event.betterPlayerEventType == BetterPlayerEventType.initialized) {
-              print("\n✅ Controller initialized successfully");
-              if (!completer.isCompleted) completer.complete(true);
-            } else if (event.betterPlayerEventType == BetterPlayerEventType.exception) {
-              print("\n❌ Controller initialization failed:");
-              print("- Error: ${event.parameters}");
-              if (!completer.isCompleted) completer.complete(false);
-            }
-          });
-          
-          // Try to initialize with a timeout
-          bool initialized = false;
-          try {
-            await newController.setupDataSource(cacheDataSource);
-            
-            initialized = await Future.any([
-              completer.future,
-              Future.delayed(Duration(seconds: 5)).then((_) {
-                print("\n⚠️ Initialization timeout after 5 seconds");
-                return false;
-              }),
-            ]);
-          } catch (e) {
-            print("\n❌ Error initializing controller: $e");
-            newController.dispose();
-            continue;
-          }
-          
-          if (!initialized) {
-            print("\n❌ Failed to initialize player with this file");
-            newController.dispose();
-            continue;
-          }
-          
-          // Success! We have a working controller
-          print("\n✅ Successfully initialized player with: ${file.path}");
-          
-          // Save current state from old controller
-          final position = _betterPlayerController.videoPlayerController?.value.position;
-          final wasPlaying = _betterPlayerController.isPlaying() ?? false;
-          
-          // Switch controllers
-          final oldController = _betterPlayerController;
-          setState(() {
-            _betterPlayerController = newController;
-            _statusMessage = "Playing from cache (${(size / 1024 / 1024).toStringAsFixed(2)}MB)";
-          });
-          
-          // Restore state
-          try {
-            if (position != null) {
-              print("\n⏩ Seeking to position: ${position.inSeconds}s");
-              await _betterPlayerController.seekTo(position);
-            }
-            
-            if (wasPlaying) {
-              print("\n▶️ Resuming playback");
-              await _betterPlayerController.play();
-            }
-          } catch (e) {
-            print("\n⚠️ Error restoring playback state: $e");
-          }
-          
-          // Clean up old controller
-          oldController.dispose();
-          
-          print("\n✅ Successfully switched to cached playback");
-          return;
-        } catch (e) {
-          print("\n❌ Error trying cache file: $e");
-          continue;
-        }
-      }
-      
-      print("\n❌ Could not initialize playback with any cache file");
-      setState(() {
-        _statusMessage = "Could not play from cache";
-      });
-      
     } catch (e) {
-      print("\n❌ Error in _tryPlayFromCache: $e");
-      setState(() {
-        _statusMessage = "Cache playback error: $e";
-      });
+      print("❌ Error checking cache: $e");
     }
+    
+    return false;
   }
 
   // Add new function to save fully buffered video to cache
@@ -1475,107 +1139,309 @@ class _VideoScreenState extends State<VideoScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text("Better Player with Caching"),
-      ),
-      body: Column(
-        children: [
-          // Status message
-          Container(
-            color: _isOffline ? Colors.red[100] : Colors.green[100],
-            padding: EdgeInsets.all(8),
-            width: double.infinity,
-            child: Text(
-              _statusMessage,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                color: _isOffline ? Colors.red[900] : Colors.green[900],
-              ),
-            ),
-          ),
-          
-          AspectRatio(
-            aspectRatio: 16 / 9,
-            child: BetterPlayer(
-              controller: _betterPlayerController,
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    ElevatedButton(
-                      onPressed: () {
-                        _betterPlayerController.seekTo(Duration.zero);
-                        _betterPlayerController.play();
-                      },
-                      child: Text("Restart"),
-                    ),
-                    ElevatedButton(
-                      onPressed: () {
-                        final currentPosition = _betterPlayerController.videoPlayerController?.value.position;
-                        if (currentPosition != null) {
-                          // When seeking backward, especially in offline mode,
-                          // we need special handling
-                          if (_isOffline) {
-                            _seekBackwardOffline(currentPosition - Duration(seconds: 10));
-                          } else {
-                            _betterPlayerController.seekTo(
-                              currentPosition - Duration(seconds: 10),
-                            );
-                          }
-                        }
-                      },
-                      child: Text("- 10s"),
-                    ),
-                    ElevatedButton(
-                      onPressed: () {
-                        final currentPosition = _betterPlayerController.videoPlayerController?.value.position;
-                        if (currentPosition != null) {
-                          _betterPlayerController.seekTo(
-                            currentPosition + Duration(seconds: 10),
-                          );
-                        }
-                      },
-                      child: Text("+ 10s"),
-                    ),
-                  ],
-                ),
-                SizedBox(height: 16),
-                // Debugging buttons
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    ElevatedButton(
-                      onPressed: () {
-                        _tryPlayFromCache();
-                      },
-                      child: Text("Force Cache Playback"),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.orange,
-                      ),
-                    ),
-                    ElevatedButton(
-                      onPressed: () async {
-                        // Toggle offline mode for testing
-                        setState(() {
-                          _isOffline = !_isOffline;
-                          _updateStatusMessage();
-                        });
-                      },
-                      child: Text(_isOffline ? "Simulate Online" : "Simulate Offline"),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _isOffline ? Colors.green : Colors.red,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+        actions: [
+          // Add a button to show cache files
+          IconButton(
+            icon: Icon(Icons.folder),
+            onPressed: () {
+              _showCacheFiles(context);
+            },
+            tooltip: "Show cached files",
           ),
         ],
+      ),
+      body: SingleChildScrollView(
+        child: Column(
+          children: [
+            // Status message
+            Container(
+              color: _isOffline ? Colors.red[100] : Colors.green[100],
+              padding: EdgeInsets.all(8),
+              width: double.infinity,
+              child: Text(
+                _statusMessage,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: _isOffline ? Colors.red[900] : Colors.green[900],
+                ),
+              ),
+            ),
+            
+            AspectRatio(
+              aspectRatio: 16 / 9,
+              child: BetterPlayer(
+                controller: _betterPlayerController,
+              ),
+            ),
+            
+            // Debug controls section
+            Container(
+              margin: EdgeInsets.only(top: 20),
+              padding: EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.grey[200],
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    "Playback Controls",
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      ElevatedButton(
+                        onPressed: () {
+                          _betterPlayerController.seekTo(Duration.zero);
+                          _betterPlayerController.play();
+                        },
+                        child: Text("Restart"),
+                        style: ElevatedButton.styleFrom(
+                          padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        ),
+                      ),
+                      ElevatedButton(
+                        onPressed: () {
+                          final currentPosition = _betterPlayerController.videoPlayerController?.value.position;
+                          if (currentPosition != null) {
+                            // When seeking backward, especially in offline mode,
+                            // we need special handling
+                            if (_isOffline) {
+                              _seekBackwardOffline(currentPosition - Duration(seconds: 10));
+                            } else {
+                              _betterPlayerController.seekTo(
+                                currentPosition - Duration(seconds: 10),
+                              );
+                            }
+                          }
+                        },
+                        child: Text("- 10s"),
+                        style: ElevatedButton.styleFrom(
+                          padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        ),
+                      ),
+                      ElevatedButton(
+                        onPressed: () {
+                          final currentPosition = _betterPlayerController.videoPlayerController?.value.position;
+                          if (currentPosition != null) {
+                            _betterPlayerController.seekTo(
+                              currentPosition + Duration(seconds: 10),
+                            );
+                          }
+                        },
+                        child: Text("+ 10s"),
+                        style: ElevatedButton.styleFrom(
+                          padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            
+            // Debug buttons section with more prominent styling
+            Container(
+              margin: EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+              padding: EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.blue[50],
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue[300]!),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    "Debugging Controls",
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blue[800],
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  SizedBox(height: 20),
+                  ElevatedButton(
+                    onPressed: () {
+                      _tryPlayFromCache();
+                    },
+                    child: Padding(
+                      padding: EdgeInsets.all(12),
+                      child: Text(
+                        "Force Cache Playback",
+                        style: TextStyle(fontSize: 16),
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.orange,
+                    ),
+                  ),
+                  SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: () async {
+                      // Toggle offline mode for testing
+                      setState(() {
+                        _isOffline = !_isOffline;
+                        _updateStatusMessage();
+                      });
+                    },
+                    child: Padding(
+                      padding: EdgeInsets.all(12),
+                      child: Text(
+                        _isOffline ? "Simulate Online" : "Simulate Offline",
+                        style: TextStyle(fontSize: 16),
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _isOffline ? Colors.green : Colors.red,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            // Add new section to display cache files
+            Container(
+              margin: EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+              padding: EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.grey[100],
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey[400]!),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    "Cached Files",
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.grey[800],
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  SizedBox(height: 10),
+                  FutureBuilder<List<Map<String, String>>>(
+                    future: _listCacheFiles(),
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(20.0),
+                            child: CircularProgressIndicator(),
+                          ),
+                        );
+                      } else if (snapshot.hasError) {
+                        return Container(
+                          padding: EdgeInsets.all(16),
+                          color: Colors.red[50],
+                          child: Text(
+                            'Error loading cache files: ${snapshot.error}',
+                            style: TextStyle(color: Colors.red),
+                          ),
+                        );
+                      } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                        return Container(
+                          padding: EdgeInsets.all(16),
+                          alignment: Alignment.center,
+                          child: Text(
+                            'No cache files found',
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        );
+                      } else {
+                        return Container(
+                          constraints: BoxConstraints(maxHeight: 300),
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: snapshot.data!.length,
+                            itemBuilder: (context, index) {
+                              final item = snapshot.data![index];
+                              return Container(
+                                margin: EdgeInsets.symmetric(vertical: 4),
+                                padding: EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: Colors.grey[300]!),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      item['filename'] ?? 'Unknown file',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 15,
+                                      ),
+                                    ),
+                                    SizedBox(height: 4),
+                                    Text(
+                                      'Path: ${item['path'] ?? 'Unknown path'}',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey[700],
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      children: [
+                                        Container(
+                                          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: Colors.blue[100],
+                                            borderRadius: BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            item['size'] ?? '0 B',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.blue[800],
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                  SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: () {
+                      setState(() {
+                        // Refresh the UI when this button is pressed
+                      });
+                    },
+                    child: Text("Refresh Cache List"),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey[700],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1603,9 +1469,510 @@ class _VideoScreenState extends State<VideoScreen> {
   @override
   void dispose() {
     // Ensure proper cleanup
-    _betterPlayerController.dispose();
+    _bufferTimer?.cancel();
+    _statusTimer?.cancel();
+    
+    // Safely dispose controller
+    try {
+      _betterPlayerController.dispose();
+    } catch (e) {
+      print("⚠️ Error disposing controller: $e");
+    }
+    
     // Clean up buffer file
-    _activeBufferFile?.delete().catchError((e) => print("Error deleting buffer file: $e"));
+    try {
+      _activeBufferFile?.delete().catchError((e) => print("Error deleting buffer file: $e"));
+    } catch (e) {
+      print("⚠️ Error deleting buffer file: $e");
+    }
+    
     super.dispose();
+  }
+  
+  // This method tries to play the next available cache file when the current one fails
+  Future<void> _tryNextCachedFile() async {
+    print("\n🔄 Current cache file failed during playback, trying next available file...");
+    
+    try {
+      // Get the current file path that failed
+      final currentPath = _betterPlayerController.betterPlayerDataSource?.url;
+      if (currentPath == null) {
+        print("\n⚠️ Cannot determine current file path");
+        return;
+      }
+      
+      // Get cache directory
+      final cacheDir = await getTemporaryDirectory();
+      
+      // Find all potential cache files again
+      List<File> candidateFiles = [];
+      
+      // Check standard cache locations
+      try {
+        final files = await Directory(cacheDir.path)
+            .list(recursive: true)
+            .where((entity) => 
+                entity is File && 
+                entity.path != currentPath &&  // Skip the current file
+                entity.path.endsWith('.mp4'))
+            .cast<File>()
+            .toList();
+        
+        for (var file in files) {
+          try {
+            final fileSize = await file.length();
+            if (fileSize > 500 * 1024) { // Only consider substantial files
+              print("\n📄 Found alternate cache file: ${file.path}");
+              print("- Size: ${(fileSize / 1024 / 1024).toStringAsFixed(2)}MB");
+              candidateFiles.add(file);
+            }
+          } catch (e) {
+            // Skip files we can't access
+          }
+        }
+      } catch (e) {
+        print("\n⚠️ Error scanning for alternate cache files: $e");
+      }
+      
+      if (candidateFiles.isEmpty) {
+        print("\n❌ No alternate cache files available");
+        setState(() {
+          _statusMessage = "No alternate cache available";
+        });
+        return;
+      }
+      
+      // Sort by size (largest first)
+      Map<String, int> fileSizes = {};
+      for (var file in candidateFiles) {
+        try {
+          final size = await file.length();
+          fileSizes[file.path] = size;
+        } catch (e) {
+          fileSizes[file.path] = 0;
+        }
+      }
+      
+      candidateFiles.sort((a, b) {
+        final sizeA = fileSizes[a.path] ?? 0;
+        final sizeB = fileSizes[b.path] ?? 0;
+        return sizeB.compareTo(sizeA);
+      });
+      
+      print("\n🔍 Found ${candidateFiles.length} alternate cache files");
+      
+      // Save current state from the failing controller
+      final position = _betterPlayerController.videoPlayerController?.value.position;
+      final wasPlaying = _betterPlayerController.isPlaying() ?? false;
+      
+      // Try each file until one works
+      for (var file in candidateFiles) {
+        try {
+          final fileSize = fileSizes[file.path] ?? 0;
+          print("\n📝 Trying alternate cache file: ${file.path}");
+          
+          // Create new controller
+          final newController = BetterPlayerController(BetterPlayerConfiguration(
+            autoPlay: false,
+            looping: false,
+            fit: BoxFit.contain,
+          ));
+          
+          // Setup data source
+          final dataSource = BetterPlayerDataSource(
+            BetterPlayerDataSourceType.file,
+            file.path,
+            videoExtension: ".mp4",
+            cacheConfiguration: BetterPlayerCacheConfiguration(
+              useCache: false, // Don't cache a cache file
+            ),
+          );
+          
+          // Create a completer to track initialization
+          final completer = Completer<bool>();
+          
+          // Set up event listener
+          newController.addEventsListener((event) {
+            if (event.betterPlayerEventType == BetterPlayerEventType.initialized) {
+              completer.complete(true);
+            } else if (event.betterPlayerEventType == BetterPlayerEventType.exception) {
+              completer.complete(false);
+            }
+          });
+          
+          // Try to initialize with a timeout
+          await newController.setupDataSource(dataSource);
+          
+          bool initialized = await Future.any([
+            completer.future,
+            Future.delayed(Duration(seconds: 5)).then((_) => false),
+          ]);
+          
+          if (!initialized) {
+            print("\n❌ Failed to initialize with alternate cache file");
+            newController.dispose();
+            continue;
+          }
+          
+          // Success! We have a working controller
+          print("\n✅ Successfully initialized with alternate cache file");
+          
+          // Switch controllers
+          final oldController = _betterPlayerController;
+          final currentFileSize = fileSizes[file.path] ?? 0;
+          setState(() {
+            _betterPlayerController = newController;
+            _statusMessage = "Using alternate cache (${(currentFileSize / 1024 / 1024).toStringAsFixed(2)}MB)";
+          });
+          
+          // Restore state
+          try {
+            if (position != null) {
+              await _betterPlayerController.seekTo(position);
+            }
+            
+            if (wasPlaying) {
+              await _betterPlayerController.play();
+            }
+          } catch (e) {
+            print("\n⚠️ Error restoring playback state: $e");
+          }
+          
+          // Clean up old controller
+          oldController.dispose();
+          
+          print("\n✅ Successfully switched to alternate cached playback");
+          return;
+        } catch (e) {
+          print("\n❌ Error trying alternate cache file: $e");
+          continue;
+        }
+      }
+      
+      print("\n❌ Could not play from any alternate cache file");
+      setState(() {
+        _statusMessage = "No working cache available";
+      });
+      
+    } catch (e) {
+      print("\n❌ Error in _tryNextCachedFile: $e");
+    }
+  }
+
+  // Add the missing _setupEventListeners method
+  void _setupEventListeners() {
+    // Get the total video size when initialized and setup other event handlers
+    _betterPlayerController.addEventsListener((BetterPlayerEvent event) async {
+      if (event.betterPlayerEventType == BetterPlayerEventType.initialized) {
+        print("✅ Player initialized successfully");
+        
+        try {
+          // Make a HEAD request to get the content length
+          final client = HttpClient();
+          final request = await client.headUrl(Uri.parse(videoUrl));
+          final response = await request.close();
+          
+          if (response.contentLength != null && response.contentLength! > 0) {
+            _totalBytes = response.contentLength!;
+            print("📊 Total video size: ${(_totalBytes / 1024 / 1024).toStringAsFixed(2)}MB");
+          }
+          client.close();
+        } catch (e) {
+          print("⚠️ Error getting video size: $e");
+        }
+        
+        if (mounted) {
+          setState(() {
+            _statusMessage = "Player initialized";
+          });
+          
+          // Start saving buffer when initialized
+          _startSavingBuffer();
+        }
+        
+      } else if (event.betterPlayerEventType == BetterPlayerEventType.exception) {
+        print("❌ Exception occurred: ${event.parameters}");
+        
+        if (_isOffline) {
+          _tryPlayFromCache();
+        }
+      } else if (event.betterPlayerEventType == BetterPlayerEventType.progress) {
+        try {
+          final progress = event.parameters?["progress"];
+          if (progress != null) {
+            double percentage = 0;
+            if (progress is Duration) {
+              final duration = _betterPlayerController.videoPlayerController?.value.duration;
+              if (duration != null && duration.inMilliseconds > 0) {
+                percentage = (progress.inMilliseconds / duration.inMilliseconds);
+                _updateBufferPercentage(percentage);
+                
+                // Update buffered bytes based on percentage of total size
+                if (_totalBytes > 0) {
+                  _bufferedBytes = (percentage * _totalBytes).round();
+                  print("💾 Buffered bytes: ${(_bufferedBytes / 1024 / 1024).toStringAsFixed(2)}MB / ${(_totalBytes / 1024 / 1024).toStringAsFixed(2)}MB");
+                }
+              }
+            } else if (progress is num) {
+              percentage = progress.toDouble();
+              _updateBufferPercentage(percentage);
+              
+              // Update buffered bytes based on percentage
+              if (_totalBytes > 0) {
+                _bufferedBytes = (percentage * _totalBytes).round();
+                print("💾 Buffered bytes: ${(_bufferedBytes / 1024 / 1024).toStringAsFixed(2)}MB / ${(_totalBytes / 1024 / 1024).toStringAsFixed(2)}MB");
+              }
+            }
+          }
+        } catch (e) {
+          print("⚠️ Progress calculation error: $e");
+        }
+      } else if (event.betterPlayerEventType == BetterPlayerEventType.finished) {
+        print("✅ Video finished playing");
+        // Stop all monitoring when video finishes
+        _stopAllMonitoring();
+        if (mounted) {
+          setState(() {
+            _statusMessage = "Video playback completed";
+          });
+        }
+      } else if (event.betterPlayerEventType == BetterPlayerEventType.bufferingUpdate) {
+        if (_betterPlayerController.videoPlayerController != null) {
+          final bufferedRanges = _betterPlayerController.videoPlayerController!.value.buffered;
+          final duration = _betterPlayerController.videoPlayerController!.value.duration;
+          
+          if (bufferedRanges.isNotEmpty && duration?.inMilliseconds != null && duration!.inMilliseconds > 0) {
+            int totalBufferedMs = 0;
+            for (var range in bufferedRanges) {
+              totalBufferedMs += (range.end.inMilliseconds - range.start.inMilliseconds);
+            }
+            
+            final newPercentage = totalBufferedMs / duration.inMilliseconds;
+            _updateBufferPercentage(newPercentage);
+            
+            // Update buffered bytes based on percentage of total size
+            if (_totalBytes > 0) {
+              _bufferedBytes = (newPercentage * _totalBytes).round();
+              print("💾 Buffered bytes: ${(_bufferedBytes / 1024 / 1024).toStringAsFixed(2)}MB / ${(_totalBytes / 1024 / 1024).toStringAsFixed(2)}MB");
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // Add the visibility changed handler function
+  void onVisibilityChanged(double visibilityFraction) {
+    if (visibilityFraction <= 0) {
+      _betterPlayerController.pause();
+    } else if (_betterPlayerController.isPlaying() ?? false) {
+      _betterPlayerController.play();
+    }
+  }
+
+  // Add these new methods for displaying cache files
+  Future<void> _showCacheFiles(BuildContext context) async {
+    // Show loading indicator
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => Center(
+        child: CircularProgressIndicator(),
+      ),
+    );
+    
+    try {
+      final cacheInfo = await _listCacheFiles();
+      
+      // Dismiss loading indicator
+      Navigator.of(context).pop();
+      
+      // Show cache files in a dialog
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text("Cache Directory Files"),
+          content: Container(
+            width: double.maxFinite,
+            height: 400,
+            child: cacheInfo.isEmpty
+                ? Center(child: Text("No files found in cache directory"))
+                : ListView.builder(
+                    itemCount: cacheInfo.length,
+                    itemBuilder: (context, index) {
+                      final item = cacheInfo[index];
+                      return ListTile(
+                        title: Text(
+                          item['filename'] ?? 'Unknown file',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        subtitle: Text(
+                          "Path: ${item['path'] ?? 'Unknown path'}",
+                          style: TextStyle(fontSize: 12),
+                        ),
+                        trailing: Text(
+                          item['size'] ?? '0 B',
+                          style: TextStyle(
+                            color: Colors.blue,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        dense: true,
+                      );
+                    },
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: Text("Close"),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                await _clearAllCacheFiles();
+                // Show confirmation
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text("Cache files cleared"),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              },
+              child: Text("Clear Cache", style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      // Dismiss loading indicator
+      Navigator.of(context).pop();
+      
+      // Show error
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Error listing cache files: $e"),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+  
+  Future<List<Map<String, String>>> _listCacheFiles() async {
+    List<Map<String, String>> result = [];
+    
+    try {
+      final cacheDir = await getTemporaryDirectory();
+      print("📂 Scanning cache directory: ${cacheDir.path}");
+      
+      if (!await cacheDir.exists()) {
+        print("❌ Cache directory doesn't exist");
+        return result;
+      }
+      
+      // Get all files in the directory and subdirectories
+      final entities = await cacheDir.list(recursive: true).toList();
+      print("📊 Found ${entities.length} files/directories in cache");
+      
+      // Filter to files only and sort by size
+      final files = entities.whereType<File>().toList();
+      
+      // Get sizes for all files
+      for (var file in files) {
+        try {
+          final size = await file.length();
+          final sizeFormatted = _formatFileSize(size);
+          final filename = file.path.split('/').last;
+          
+          result.add({
+            'filename': filename,
+            'path': file.path,
+            'size': sizeFormatted,
+            'raw_size': size.toString(), // For sorting
+          });
+        } catch (e) {
+          print("⚠️ Error getting file size: $e");
+          result.add({
+            'filename': file.path.split('/').last,
+            'path': file.path,
+            'size': 'Error',
+            'raw_size': '0',
+          });
+        }
+      }
+      
+      // Sort by size (largest first)
+      result.sort((a, b) {
+        final sizeA = int.tryParse(a['raw_size'] ?? '0') ?? 0;
+        final sizeB = int.tryParse(b['raw_size'] ?? '0') ?? 0;
+        return sizeB.compareTo(sizeA);
+      });
+      
+      return result;
+    } catch (e) {
+      print("❌ Error listing cache files: $e");
+      return [];
+    }
+  }
+  
+  String _formatFileSize(int bytes) {
+    const suffixes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var i = 0;
+    double size = bytes.toDouble();
+    
+    while (size >= 1024 && i < suffixes.length - 1) {
+      size /= 1024;
+      i++;
+    }
+    
+    return '${size.toStringAsFixed(2)} ${suffixes[i]}';
+  }
+  
+  Future<void> _clearAllCacheFiles() async {
+    try {
+      final cacheDir = await getTemporaryDirectory();
+      
+      // Delete all files first
+      final entities = await cacheDir.list(recursive: true).toList();
+      for (var entity in entities) {
+        if (entity is File) {
+          try {
+            await entity.delete();
+          } catch (e) {
+            print("⚠️ Error deleting file ${entity.path}: $e");
+          }
+        }
+      }
+      
+      // Reset our tracking variables
+      setState(() {
+        _highestBufferedPercentage = 0.0;
+        _bufferedPercentage = 0.0;
+        _totalBytes = 0;
+        _bufferedBytes = 0;
+        _isFullyCached = false;
+      });
+      
+      // Reset buffer file
+      await _initializeBufferFile();
+      
+      print("✅ Cache files cleared successfully");
+    } catch (e) {
+      print("❌ Error clearing cache files: $e");
+    }
+  }
+
+  // Add method to refresh cached files when needed
+  void _refreshCacheList() {
+    if (mounted) {
+      setState(() {
+        // Trigger rebuild to refresh cache list
+      });
+    }
   }
 } 
