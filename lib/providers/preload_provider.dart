@@ -200,26 +200,33 @@ class PreloadNotifier extends StateNotifier<PreloadState> {
   Future<void> _initializeControllerAtIndex(int index) async {
     if (state.urls.length > index && index >= 0) {
       // Create new controller
+      final BetterPlayerController controller = BetterPlayerController(config);
       
-      final BetterPlayerController controller =
-          BetterPlayerController(config);
       final dataSource = BetterPlayerDataSource(
-              BetterPlayerDataSourceType.network,
-              state.urls[index],
-              notificationConfiguration: BetterPlayerNotificationConfiguration(
-                showNotification: false,
+        BetterPlayerDataSourceType.network,
+        
+        state.urls[index],
+        cacheConfiguration: BetterPlayerCacheConfiguration(
+                useCache: true,
+                useCacheProxy: true,
+                preCacheSize: 50 * 1024, // 50KB pre-cache
+                maxCacheSize: 100 * 1024 * 1024, // 100MB
+                maxCacheFileSize: 100 * 1024 * 1024, // 100MB
               ),
-            );
-      controller.setupDataSource(dataSource);
-      // Add to [controllers] list
+        notificationConfiguration: const BetterPlayerNotificationConfiguration(
+          showNotification: false,
+        ),
+      );
+
+      // Add to [controllers] list first so the UI can show loading state
       final updatedControllers = {...state.controllers};
       updatedControllers[index] = controller;
       state = state.copyWith(controllers: updatedControllers);
-      // Initialize
-   
-    
-        log('🚀🚀🚀 INITIALIZED $index');
+
+      // Setup data source and wait for initialization
+      await controller.setupDataSource(dataSource);
       
+      log('🚀🚀🚀 INITIALIZED $index');
     }
   }
 

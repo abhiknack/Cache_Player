@@ -35,55 +35,69 @@ class VideoPage extends ConsumerWidget {
 }
 
 /// Custom Feed Widget consisting video
-class VideoWidget extends StatelessWidget {
+class VideoWidget extends StatefulWidget {
   const VideoWidget({
     Key? key,
     required this.isLoading,
     required this.controller,
-  });
+  }) : super(key: key);
 
   final bool isLoading;
   final BetterPlayerController controller;
+
+  @override
+  State<VideoWidget> createState() => _VideoWidgetState();
+}
+
+class _VideoWidgetState extends State<VideoWidget> {
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addEventsListener(_onPlayerEvent);
+  }
+
+  void _onPlayerEvent(BetterPlayerEvent event) {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeEventsListener(_onPlayerEvent);
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<bool>(
-      future: Future.value(controller.isVideoInitialized()),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData || !snapshot.data!) {
-          return const Center(
-            child: Column(
-              children: [
-                CupertinoActivityIndicator(
-                  color: Colors.white,
-                  radius: 8,
-                ),
-                Text('Loading...'),
-              ],
-            ),
-          );
-        }
+    final bool isInitialized = widget.controller.isVideoInitialized() ?? false;
 
-        return Column(
+    if (!isInitialized) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Expanded(child: BetterPlayer(controller: controller)),
-            AnimatedCrossFade(
-              alignment: Alignment.bottomCenter,
-              sizeCurve: Curves.decelerate,
-              duration: const Duration(milliseconds: 400),
-              firstChild: Padding(
-                padding: const EdgeInsets.all(10.0),
-                child: CupertinoActivityIndicator(
-                  color: Colors.white,
-                  radius: 8,
-                ),
-              ),
-              secondChild: const SizedBox(),
-              crossFadeState:
-                  isLoading ? CrossFadeState.showFirst : CrossFadeState.showSecond,
-            ),
+            CupertinoActivityIndicator(color: Colors.white, radius: 8),
+            SizedBox(height: 8),
+            Text('Loading...'),
           ],
-        );
-      },
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        Expanded(child: BetterPlayer(controller: widget.controller)),
+        AnimatedCrossFade(
+          alignment: Alignment.bottomCenter,
+          sizeCurve: Curves.decelerate,
+          duration: const Duration(milliseconds: 400),
+          firstChild: Padding(
+            padding: const EdgeInsets.all(10.0),
+            child: CupertinoActivityIndicator(color: Colors.white, radius: 8),
+          ),
+          secondChild: const SizedBox(),
+          crossFadeState: widget.isLoading ? CrossFadeState.showFirst : CrossFadeState.showSecond,
+        ),
+      ],
     );
   }
 }
