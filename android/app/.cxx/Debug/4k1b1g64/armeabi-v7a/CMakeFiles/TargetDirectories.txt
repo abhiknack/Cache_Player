@@ -1,0 +1,2 @@
+C:/Users/abhib/OneDrive/Desktop/proxy_app/cachevideo/android/app/.cxx/Debug/4k1b1g64/armeabi-v7a/CMakeFiles/edit_cache.dir
+C:/Users/abhib/OneDrive/Desktop/proxy_app/cachevideo/android/app/.cxx/Debug/4k1b1g64/armeabi-v7a/CMakeFiles/rebuild_cache.dir
