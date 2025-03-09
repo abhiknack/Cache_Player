@@ -11,7 +11,7 @@ import 'package:better_player/better_player.dart';
 // Model class for our state
 class PreloadState {
   final List<String> urls;
-  final Map<int, BetterPlayerController?> controllers;
+  final Map<int, VideoPlayerController?> controllers;
   final int focusedIndex;
   final int reloadCounter;
   final bool isLoading;
@@ -26,7 +26,7 @@ class PreloadState {
 
   PreloadState copyWith({
     List<String>? urls,
-    Map<int, BetterPlayerController?>? controllers,
+    Map<int, VideoPlayerController?>? controllers,
     int? focusedIndex,
     int? reloadCounter,
     bool? isLoading,
@@ -73,21 +73,6 @@ void _getVideosTask(SendPort mySendPort) async {
 class PreloadNotifier extends StateNotifier<PreloadState> {
   PreloadNotifier() : super(PreloadState.initial());
 
-  final config = BetterPlayerConfiguration(
-              autoPlay: false,
-              looping: true,
-              handleLifecycle: false,
-              allowedScreenSleep: false,
-              fit: BoxFit.cover,
-              autoDispose: false,
-              aspectRatio: 9 / 16,
-              expandToFill: true,
-              playerVisibilityChangedBehavior: null,
-              controlsConfiguration: const BetterPlayerControlsConfiguration(
-                showControls: false,
-              ),
-            );
-  // Method to set loading state
   void setLoading() {
     state = state.copyWith(isLoading: true);
   }
@@ -200,23 +185,9 @@ class PreloadNotifier extends StateNotifier<PreloadState> {
   Future<void> _initializeControllerAtIndex(int index) async {
     if (state.urls.length > index && index >= 0) {
       // Create new controller
-      final BetterPlayerController controller = BetterPlayerController(config);
+      final VideoPlayerController controller = VideoPlayerController.networkUrl(Uri.parse(state.urls[index]));
       
-      final dataSource = BetterPlayerDataSource(
-        BetterPlayerDataSourceType.network,
-        
-        state.urls[index],
-        cacheConfiguration: BetterPlayerCacheConfiguration(
-                useCache: true,
-                useCacheProxy: true,
-                preCacheSize: 50 * 1024, // 50KB pre-cache
-                maxCacheSize: 100 * 1024 * 1024, // 100MB
-                maxCacheFileSize: 100 * 1024 * 1024, // 100MB
-              ),
-        notificationConfiguration: const BetterPlayerNotificationConfiguration(
-          showNotification: false,
-        ),
-      );
+     
 
       // Add to [controllers] list first so the UI can show loading state
       final updatedControllers = {...state.controllers};
@@ -224,7 +195,7 @@ class PreloadNotifier extends StateNotifier<PreloadState> {
       state = state.copyWith(controllers: updatedControllers);
 
       // Setup data source and wait for initialization
-      await controller.setupDataSource(dataSource);
+      await controller.initialize();
       
       log('🚀🚀🚀 INITIALIZED $index');
     }
@@ -233,7 +204,7 @@ class PreloadNotifier extends StateNotifier<PreloadState> {
   void _playControllerAtIndex(int index) {
     if (state.urls.length > index && index >= 0) {
       // Get controller at [index]
-      final BetterPlayerController? controller = state.controllers[index];
+      final VideoPlayerController? controller = state.controllers[index];
 
       if (controller != null) {
         // Play controller
@@ -246,7 +217,7 @@ class PreloadNotifier extends StateNotifier<PreloadState> {
   void _stopControllerAtIndex(int index) {
     if (state.urls.length > index && index >= 0) {
       // Get controller at [index]
-      final BetterPlayerController? controller = state.controllers[index];
+      final VideoPlayerController? controller = state.controllers[index];
 
       if (controller != null) {
         // Pause
@@ -263,7 +234,7 @@ class PreloadNotifier extends StateNotifier<PreloadState> {
   void _disposeControllerAtIndex(int index) {
     if (state.urls.length > index && index >= 0) {
       // Get controller at [index]
-      final BetterPlayerController? controller = state.controllers[index];
+      final VideoPlayerController? controller = state.controllers[index];
 
       if (controller != null) {
         // Dispose controller

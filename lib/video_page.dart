@@ -3,6 +3,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_preload_videos/providers/preload_provider.dart';
+import 'package:video_player/video_player.dart';
 
 class VideoPage extends ConsumerWidget {
   const VideoPage();
@@ -43,7 +44,7 @@ class VideoWidget extends StatefulWidget {
   }) : super(key: key);
 
   final bool isLoading;
-  final BetterPlayerController controller;
+  final VideoPlayerController controller;
 
   @override
   State<VideoWidget> createState() => _VideoWidgetState();
@@ -51,48 +52,20 @@ class VideoWidget extends StatefulWidget {
 
 class _VideoWidgetState extends State<VideoWidget> {
   @override
-  void initState() {
-    super.initState();
-    widget.controller.addEventsListener(_onPlayerEvent);
-  }
-
-  void _onPlayerEvent(BetterPlayerEvent event) {
-    if (mounted) setState(() {});
-  }
-
-  @override
-  void dispose() {
-    widget.controller.removeEventsListener(_onPlayerEvent);
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final bool isInitialized = widget.controller.isVideoInitialized() ?? false;
-
-    if (!isInitialized) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CupertinoActivityIndicator(color: Colors.white, radius: 8),
-            SizedBox(height: 8),
-            Text('Loading...'),
-          ],
-        ),
-      );
-    }
-
     return Column(
       children: [
-        Expanded(child: BetterPlayer(controller: widget.controller)),
+        Expanded(child: VideoPlayer(widget.controller)),
         AnimatedCrossFade(
           alignment: Alignment.bottomCenter,
           sizeCurve: Curves.decelerate,
           duration: const Duration(milliseconds: 400),
           firstChild: Padding(
             padding: const EdgeInsets.all(10.0),
-            child: CupertinoActivityIndicator(color: Colors.white, radius: 8),
+            child: CupertinoActivityIndicator(
+              color: Colors.white,
+              radius: 8,
+            ),
           ),
           secondChild: const SizedBox(),
           crossFadeState: widget.isLoading ? CrossFadeState.showFirst : CrossFadeState.showSecond,
