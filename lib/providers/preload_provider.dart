@@ -7,7 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_preload_videos/core/constants.dart';
 import 'package:flutter_preload_videos/service/api_service.dart';
 import 'package:video_player/video_player.dart';
-import 'package:better_player/better_player.dart';
 // Model class for our state
 class PreloadState {
   final List<String> urls;
@@ -72,7 +71,8 @@ void _getVideosTask(SendPort mySendPort) async {
 // Create the provider
 class PreloadNotifier extends StateNotifier<PreloadState> {
   PreloadNotifier() : super(PreloadState.initial());
-
+  final kPreloadLimit = 1;
+  final kNextLimit = 10;
   void setLoading() {
     state = state.copyWith(isLoading: true);
   }
@@ -129,7 +129,7 @@ class PreloadNotifier extends StateNotifier<PreloadState> {
     // Initialize new url
     _initializeControllerAtIndex(state.focusedIndex + 1);
     
-    log('🚀🚀🚀 NEW VIDEOS ADDED');
+    log('[DEBUG] 🚀🚀🚀 NEW VIDEOS ADDED');
   }
 
   // Isolate to fetch videos in the background
@@ -185,7 +185,7 @@ class PreloadNotifier extends StateNotifier<PreloadState> {
   Future<void> _initializeControllerAtIndex(int index) async {
     if (state.urls.length > index && index >= 0) {
       // Create new controller
-      final VideoPlayerController controller = VideoPlayerController.networkUrl(Uri.parse(state.urls[index]));
+      final VideoPlayerController controller = VideoPlayerController.networkUrl(Uri.parse(state.urls[index]),videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true));
       
      
 
@@ -197,7 +197,7 @@ class PreloadNotifier extends StateNotifier<PreloadState> {
       // Setup data source and wait for initialization
       await controller.initialize();
       
-      log('🚀🚀🚀 INITIALIZED $index');
+      log('[DEBUG] 🚀🚀🚀 INITIALIZED $index');
     }
   }
 
@@ -209,7 +209,7 @@ class PreloadNotifier extends StateNotifier<PreloadState> {
       if (controller != null) {
         // Play controller
         controller.play();
-        log('🚀🚀🚀 PLAYING $index');
+        log('[DEBUG] 🚀🚀🚀 PLAYING $index');
       }
     }
   }
@@ -226,7 +226,7 @@ class PreloadNotifier extends StateNotifier<PreloadState> {
         // Reset position to beginning
         controller.seekTo(const Duration());
 
-        log('🚀🚀🚀 STOPPED $index');
+        log('[DEBUG] 🚀🚀🚀 STOPPED $index');
       }
     }
   }
@@ -244,7 +244,7 @@ class PreloadNotifier extends StateNotifier<PreloadState> {
         updatedControllers.remove(index);
         state = state.copyWith(controllers: updatedControllers);
 
-        log('🚀🚀🚀 DISPOSED $index');
+        log('[DEBUG] 🚀🚀🚀 DISPOSED $index');
       }
     }
   }
